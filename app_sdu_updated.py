@@ -496,7 +496,7 @@ if page == "📊 Обзор":
     avg_recent  = df_sorted[df_sorted["year_month"].isin(months_all[-half:])]["rating"].mean()
     avg_earlier = df_sorted[df_sorted["year_month"].isin(months_all[:half])]["rating"].mean()
     trend_delta = avg_recent - avg_earlier
-    trend_arrow = "📈" if trend_delta > 0.1 else ("📉" if trend_delta < -0.1 else "➡️")
+    trend_arrow = "" if trend_delta > 0.1 else (""if trend_delta < -0.1 else "➡️")
     trend_label = "рост" if trend_delta > 0.1 else ("снижение" if trend_delta < -0.1 else "стабильно")
 
     st.markdown(f"""
