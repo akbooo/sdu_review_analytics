@@ -10,6 +10,29 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import nltk
 from nltk.corpus import stopwords
 import os
+def check_password():
+    if st.session_state.get("authenticated", False):
+        return True
+
+    st.title("Protected App")
+    st.write("Please enter the password to continue.")
+
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        if password == st.secrets["APP_PASSWORD"]:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password")
+
+    return False
+
+if not check_password():
+    st.stop()
+
+st.title("My App")
+st.write("App is unlocked")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ── download stopwords if needed ──────────────────────────────────────────────
