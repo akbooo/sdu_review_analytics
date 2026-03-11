@@ -31,9 +31,6 @@ def check_password():
 if not check_password():
     st.stop()
 
-st.title("My App")
-st.write("App is unlocked")
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ── download stopwords if needed ──────────────────────────────────────────────
 try:
