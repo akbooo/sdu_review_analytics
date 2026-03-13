@@ -42,7 +42,7 @@ except LookupError:
 
 # ── config ────────────────────────────────────────────────────────────────────
 MODEL        = "llama-3.1-8b-instant"
-CSV_PATH     = "C:/Users/Subbota/madrid lab/sdu_categorized_final.csv"
+CSV_PATH     = "sdu_categorized_final.csv"
 
 st.set_page_config(
     page_title="SDU Reviews — 2GIS Analytics",
