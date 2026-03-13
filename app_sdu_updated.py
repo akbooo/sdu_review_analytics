@@ -10,6 +10,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 import nltk
 from nltk.corpus import stopwords
 import os
+from bs4 import BeautifulSoup
 def check_password():
     if st.session_state.get("authenticated", False):
         return True
@@ -31,6 +32,7 @@ def check_password():
 if not check_password():
     st.stop()
 
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ── download stopwords if needed ──────────────────────────────────────────────
 try:
@@ -40,7 +42,7 @@ except LookupError:
 
 # ── config ────────────────────────────────────────────────────────────────────
 MODEL        = "llama-3.1-8b-instant"
-CSV_PATH     = "sdu_overall_march_classified.csv"
+CSV_PATH     = "C:/Users/Subbota/madrid lab/sdu_categorized_final.csv"
 
 st.set_page_config(
     page_title="SDU Reviews — 2GIS Analytics",
@@ -71,7 +73,25 @@ section[data-testid="stSidebar"] hr { border-color:#2a3470 !important; }
   box-shadow:0 2px 10px rgba(30,37,87,0.12) !important; border-left:4px solid #e8832a !important; margin-bottom:15px !important; }
 .stButton>button { background-color:#e8832a !important; color:white !important; border-radius:8px !important;
   padding:10px 20px !important; border:none !important; font-weight:600 !important; }
-.stButton>button:hover { background-color:#1e2557 !important; transition:0.2s; }
+.stButton>button:hover { background-color:#cf6d1a !important; transition:0.2s; }
+
+/* ── Quote buttons in problem zones: white background, red border ── */
+.quote-btn div[data-testid="stButton"] > button {
+  background-color: #ffffff !important;
+  color: #c0392b !important;
+  border: 1.5px solid #fca5a5 !important;
+  font-weight: 400 !important;
+  font-size: 0.88em !important;
+  text-align: left !important;
+  justify-content: flex-start !important;
+  padding: 10px 14px !important;
+  line-height: 1.5 !important;
+}
+.quote-btn div[data-testid="stButton"] > button:hover {
+  background-color: #fff5f5 !important;
+  border-color: #c0392b !important;
+  color: #7f1d1d !important;
+}
 table { background-color:white !important; border-radius:10px !important; overflow:hidden !important; }
 .stSelectbox [data-baseweb="select"] { background-color:white !important; }
 
@@ -131,6 +151,9 @@ table { background-color:white !important; border-radius:10px !important; overfl
   background: transparent !important;
 }
             
+/* ── Hide Material Icon text in expanders (renders as "keyboard_arrow_right") ── */
+[data-testid="stExpander"] details summary p { font-weight:600 !important; color:#1e2557 !important; }
+
 [data-testid="collapsedControl"] { font-size:0 !important; }
 [data-testid="collapsedControl"]::after {
   content:"▶";
@@ -209,13 +232,36 @@ MONTH_NAMES = {
 }
 SENT_LABELS = {"positive": "Позитивный", "negative": "Негативный", "neutral": "Нейтральный"}
 
+_NUM_TO_RU_MONTH = {
+    1:"января",2:"февраля",3:"марта",4:"апреля",5:"мая",6:"июня",
+    7:"июля",8:"августа",9:"сентября",10:"октября",11:"ноября",12:"декабря",
+}
+
 def parse_date(x):
-    if pd.isna(x): return None
-    parts = str(x).split()
-    if len(parts) != 3: return None
-    d, m, y = parts
-    m = MONTHS_RU.get(m.lower())
-    return f"{y}-{m}-{d.zfill(2)}" if m else None
+    """Parse date to ISO YYYY-MM-DD. Handles Russian text, ISO, and Timestamp strings."""
+    if pd.isna(x):
+        return None
+    s = str(x).strip()
+    # ISO or Timestamp format: '2024-01-15' or '2024-01-15 00:00:00'
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        return s[:10]
+    # Russian format: '15 января 2024'
+    parts = s.split()
+    if len(parts) == 3:
+        d, m, y = parts
+        m = MONTHS_RU.get(m.lower())
+        return f"{y}-{m}-{d.zfill(2)}" if m else None
+    return None
+
+def ts_to_ru_date(ts):
+    """Convert Timestamp back to Russian string '15 января 2024' for CSV saving."""
+    try:
+        t = pd.to_datetime(ts)
+        if pd.isna(t):
+            return None
+        return f"{t.day} {_NUM_TO_RU_MONTH[t.month]} {t.year}"
+    except Exception:
+        return None
 
 russian_stopwords = stopwords.words("russian")
 
@@ -302,6 +348,189 @@ def format_month_prompt(period, texts, keywords, top_cats, sentiment_summary):
   "insight": "Подробный нарратив на 4-6 предложений: что делало этот месяц особенным, какие события или тенденции отразились в отзывах, как менялось настроение студентов, что можно порекомендовать."
 }}"""
 
+# ── HTML parser for 2GIS reviews ──────────────────────────────────────────────
+_MONTHS_NUM_TO_RU = {
+    1:"января",2:"февраля",3:"марта",4:"апреля",5:"мая",6:"июня",
+    7:"июля",8:"августа",9:"сентября",10:"октября",11:"ноября",12:"декабря",
+}
+_MONTHS_RU_TO_NUM = {v: k for k, v in _MONTHS_NUM_TO_RU.items()}
+
+def normalize_2gis_date(date_text):
+    """Convert 2GIS date string to CSV format: 'D Month YYYY'."""
+    if not date_text:
+        return None
+    s = date_text.strip().lower()
+    s = re.sub(r"\s*г\.?$", "", s).strip()
+    today = pd.Timestamp.now()
+    if s == "сегодня":
+        return f"{today.day} {_MONTHS_NUM_TO_RU[today.month]} {today.year}"
+    if s == "вчера":
+        yest = today - pd.Timedelta(days=1)
+        return f"{yest.day} {_MONTHS_NUM_TO_RU[yest.month]} {yest.year}"
+    parts = s.split()
+    if len(parts) == 3:
+        day, month_ru, year = parts
+        if month_ru in _MONTHS_RU_TO_NUM and day.isdigit() and year.isdigit():
+            return f"{int(day)} {month_ru} {year}"
+    if len(parts) == 2:
+        day, month_ru = parts
+        if month_ru in _MONTHS_RU_TO_NUM and day.isdigit():
+            return f"{int(day)} {month_ru} {today.year}"
+    return date_text
+
+def parse_html_2gis(html_content):
+    """Parse reviews from 2GIS HTML"""
+    soup = BeautifulSoup(html_content, "html.parser")
+    reviews = []
+    containers = soup.find_all("div", class_="_1k5soqfl")
+    
+    for c in containers:
+        # Date and edited flag
+        date_tag = c.find("div", class_="_a5f6uz")
+        date_text = date_tag.get_text(strip=True) if date_tag else None
+        edited = False
+        if date_text:
+            edited = "отредакт" in date_text.lower()
+            date_text = date_text.replace(", отредактирован", "").replace(", отредактирована", "")
+        date_text = normalize_2gis_date(date_text)
+
+        # Review text
+        text_tag = c.find("div", class_="_49x36f")
+        text = None
+        if text_tag:
+            a = text_tag.find("a")
+            text = a.get_text(strip=True) if a else None
+        
+        # Rating
+        rating_container = c.find("div", class_="_1fkin5c")
+        rating = None
+        if rating_container:
+            yellow_stars = rating_container.find_all("svg")
+            rating = len(yellow_stars)
+        
+        # Official reply
+        reply_block = c.find("div", class_="_nqaxddm")
+        has_reply = bool(reply_block)
+        
+        # Reactions
+        reaction_blocks = c.find_all("div", class_="_e296pg")
+        total_reactions = 0
+        for rb in reaction_blocks:
+            num_tag = rb.find("div", class_="_11fxohc")
+            if num_tag:
+                span = num_tag.find("span")
+                if span:
+                    txt = span.get_text(strip=True)
+                    if txt.isdigit():
+                        total_reactions += int(txt)
+        
+        if text and rating is not None:
+            reviews.append({
+                "text": text,
+                "date": date_text,
+                "rating": rating,
+                "has_official_reply": has_reply,
+                "reactions_total": total_reactions,
+                "edited": edited
+            })
+    
+    return pd.DataFrame(reviews)
+
+# ── Groq categorization for new reviews ───────────────────────────────────────
+CATEGORIES_LIST = [
+    "1. Охрана и пропускной режим", "2. Еда и столовая",
+    "3. Поступление и приёмная комиссия", "4. Преподаватели и качество образования",
+    "5. Портал и IT-системы", "6. Стоимость и финансы",
+    "7. Трудоустройство и карьера", "8. Религия", "9. Феминизм",
+    "10. Транспорт и расположение", "11. Атмосфера и студенческая жизнь",
+    "12. Администрация и студ. отдел", "13. Дискриминация и этика",
+    "14. Инфраструктура и кампус", "15. Нерелевантный / пустой отзыв",
+    "16. Лагерь", "17. Общежитие", "18. Дипломы и документы",
+    "19. Отзывы выпускников", "20. Колл центр", "21. Общий негативный отзыв",
+    "22. Общий нейтральный отзыв", "23. Общий позитивный отзыв",
+    "Жалоба на удаление отзыва", "Упоминание имен учителей",
+]
+CATEGORIES_STR = "\n".join(f"- {c}" for c in CATEGORIES_LIST)
+
+def categorize_reviews_groq(texts, batch_size=10):
+    """Categorize a list of review texts via Groq. Returns list of category strings."""
+    results = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i+batch_size]
+        numbered = "\n".join([f"{j+1}. {t[:300]}" for j, t in enumerate(batch)])
+        prompt = f"""Ты аналитик отзывов университета СДУ (Казахстан).
+
+Вот список допустимых категорий:
+{CATEGORIES_STR}
+
+Для каждого отзыва определи 1-3 наиболее подходящие категории ТОЛЬКО из списка выше.
+Верни ТОЛЬКО JSON массив, без markdown, без пояснений.
+Формат: [{{"idx": 1, "categories": "4. Преподаватели и качество образования; 11. Атмосфера и студенческая жизнь"}}, ...]
+
+Отзывы:
+{numbered}
+"""
+        resp = call_groq(prompt, max_tokens=1200)
+        batch_map = {}
+        if isinstance(resp, list):
+            for item in resp:
+                if isinstance(item, dict) and "idx" in item and "categories" in item:
+                    batch_map[int(item["idx"])] = item["categories"]
+        elif isinstance(resp, dict):
+            for v in resp.values():
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, dict) and "idx" in item and "categories" in item:
+                            batch_map[int(item["idx"])] = item["categories"]
+                    break
+        for j in range(len(batch)):
+            results.append(batch_map.get(j+1, "15. Нерелевантный / пустой отзыв"))
+    return results
+
+def merge_and_deduplicate(existing_df, new_df):
+    """Merge new reviews with existing ones — existing data is never touched,
+    only new reviews not already present in existing are appended."""
+    # Ensure all columns from existing_df are present in new_df
+    for col in existing_df.columns:
+        if col not in new_df.columns:
+            if col in ("edited", "has_official_reply"):
+                new_df[col] = False
+            else:
+                new_df[col] = None
+
+    # Standardize data types for important columns
+    for col in ("edited", "has_official_reply"):
+        if col in new_df.columns:
+            new_df[col] = new_df[col].astype(bool)
+        if col in existing_df.columns:
+            existing_df[col] = existing_df[col].astype(bool)
+
+    # Normalize text for comparison: lowercase, collapse all whitespace
+    def norm(s):
+        return re.sub(r"\s+", " ", str(s).lower().strip())
+
+    existing_texts = set(existing_df["text"].apply(norm))
+    truly_new = new_df[~new_df["text"].apply(norm).isin(existing_texts)].copy()
+
+    # Restore existing_df dates to Russian string format for safe CSV round-trip
+    existing_save = existing_df.copy()
+    # Use date_str if available, otherwise convert Timestamp back to Russian string
+    if "date_str" in existing_save.columns:
+        existing_save["date"] = existing_save["date_str"]
+    else:
+        existing_save["date"] = existing_save["date"].apply(ts_to_ru_date)
+    # Drop all derived/computed columns — they are rebuilt by load_data on next load
+    drop_cols = [c for c in ("date_str", "year", "month", "year_month", "year_month_str",
+                              "clean_text", "sentiment", "category", "orig_idx") if c in existing_save.columns]
+    existing_save = existing_save.drop(columns=drop_cols)
+    drop_cols_new = [c for c in drop_cols if c in truly_new.columns]
+    truly_new = truly_new.drop(columns=drop_cols_new)
+
+    # Append truly new rows to the restored existing data
+    combined = pd.concat([existing_save, truly_new], ignore_index=True)
+    combined = combined.reset_index(drop=True)
+    return combined
+
 # ── load & prepare data ───────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
@@ -313,7 +542,13 @@ def load_data():
     df["rating"]          = pd.to_numeric(df["rating"], errors="coerce").fillna(3).astype(int)
     df["reactions_total"] = pd.to_numeric(df["reactions_total"], errors="coerce").fillna(0).astype(int)
     df["sentiment"]       = df["rating"].apply(rating_to_sentiment)
-    df["categories_raw"]  = df["categories"].astype(str).str.strip()
+    
+    # Handle categories column - may not exist if data was parsed from HTML
+    if "categories" in df.columns:
+        df["categories_raw"] = df["categories"].astype(str).str.strip()
+    else:
+        df["categories_raw"] = "Без категории"
+    
     df["category"]        = df["categories_raw"].str.split(";").str[0].str.strip().apply(strip_cat_num)
     df["date_str"]        = df["date"].apply(parse_date)
     df["date"]            = pd.to_datetime(df["date_str"], errors="coerce")
@@ -321,16 +556,33 @@ def load_data():
     df["month"]           = df["date"].dt.month
     df["year_month"]      = df["date"].dt.to_period("M").dt.to_timestamp()
     df["year_month_str"]  = df["date"].dt.to_period("M").astype(str)
+    
+    # Handle edited column - may not exist if data was loaded from older CSV
+    if "edited" not in df.columns:
+        df["edited"] = False
+    
     df = df.reset_index(drop=True)
     df["orig_idx"] = df.index
     return df
 
 @st.cache_data
 def make_exploded(df):
+    # prevent the same review being added twice for the same category
     rows = []
-    for _, row in df.iterrows():
+    seen = set()
+    for idx, row in df.iterrows():
         cats = [strip_cat_num(c.strip()) for c in str(row["categories_raw"]).split(";") if c.strip()]
+        # Remove duplicates from categories list to prevent same review appearing multiple times
+        unique_cats = []
         for cat in cats:
+            if cat not in unique_cats:
+                unique_cats.append(cat)
+        
+        for cat in unique_cats:
+            key = (row["orig_idx"], cat)
+            if key in seen:
+                continue
+            seen.add(key)
             rows.append({
                 "orig_idx":        row["orig_idx"],
                 "text":            row["text"],
@@ -395,18 +647,58 @@ def render_review_cards(dataframe, max_n=20, key_prefix="rc"):
         show_n = st.slider("Показать отзывов:", 1, max_slider, default_n)
     else:
         show_n = total
-    for row in dataframe.head(show_n).itertuples():
-        txt = row.text[:400] + ("..." if len(row.text) > 400 else "")
+
+    def _card_html(text, date_html, sent_color, cats_display, row):
+        return f"""
+        <div class="review-card" style="border-left:4px solid {sent_color};">
+            <p style="margin:0;color:#1e2557;line-height:1.6;word-break:break-word;">{text}</p>
+            <div style="display:flex;align-items:flex-end;margin-top:6px;flex-wrap:wrap;gap:8px;">
+                <div>{date_html}</div>
+                <p class="review-meta" style="margin:0;">
+                    ⭐ {row.rating} &nbsp;|&nbsp; 👍 {row.reactions_total} реакций
+                    &nbsp;|&nbsp; <span style="color:#e8832a;">{cats_display}</span>
+                </p>
+            </div>
+        </div>
+        """
+
+    for idx, row in enumerate(dataframe.head(show_n).itertuples()):
+        full_text = row.text
+        is_long = len(full_text) > 350
+        preview = full_text[:350] + "..." if is_long else full_text
         cats_display = " · ".join([strip_cat_num(c.strip()) for c in row.categories_raw.split(";") if c.strip()])
         sent_color = {"positive":"#39dfb6","negative":"#fe7070","neutral":"#ffbe51"}.get(row.sentiment, "#ccc")
-        st.markdown(f"""
-        <div class="review-card" style="border-left:4px solid {sent_color};">
-            <p style="margin:0;color:#1e2557;">{txt}</p>
-            <p class="review-meta">
-              ⭐ {row.rating} &nbsp;|&nbsp; 👍 {row.reactions_total} реакций
-              &nbsp;|&nbsp; <span style="color:#e8832a;">{cats_display}</span>
-            </p>
-        </div>""", unsafe_allow_html=True)
+        try:
+            date_val = row.date
+            date_display = pd.to_datetime(date_val).strftime("%d.%m.%Y") if pd.notna(date_val) else None
+        except:
+            date_display = None
+        date_html = (
+            f'<span style="display:inline-block;border:1.5px solid #e8832a;'
+            f'border-radius:6px;padding:1px 8px;font-size:0.78em;'
+            f'color:#e8832a;font-weight:600;background:#fff8f3;">{date_display}</span>'
+            if date_display else ""
+        )
+
+        st.markdown(_card_html(preview, date_html, sent_color, cats_display, row), unsafe_allow_html=True)
+
+        if is_long:
+            with st.expander("Показать полный отзыв"):
+                st.markdown(f"""
+                <div style="color:#1e2557;line-height:1.8;font-size:0.96em;
+                           word-break:break-word;white-space:pre-wrap;
+                           font-family:'Inter',sans-serif;">{full_text}</div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;
+                            padding-top:10px;border-top:1px solid #eee;">
+                    <span style="background:#f0f2fa;padding:5px 12px;border-radius:20px;
+                                 font-size:0.75em;color:#1e2557;font-weight:700;">
+                        {row.rating} звёзд</span>
+                    <span style="background:#f0f2fa;padding:5px 12px;border-radius:20px;
+                                 font-size:0.75em;color:#1e2557;font-weight:700;">
+                        {row.reactions_total} реакций</span>
+                    {f'<span style="background:#fff8f3;padding:5px 12px;border-radius:20px;font-size:0.75em;color:#e8832a;font-weight:700;">{date_display}</span>' if date_display else ''}
+                </div>
+                """, unsafe_allow_html=True)
 
 # ── patch sidebar collapse button text via JS ─────────────────────────────────
 import streamlit.components.v1 as _components
@@ -415,13 +707,25 @@ _components.html("""
 function patchSidebarButton() {
   const doc = window.parent.document;
   // Find all spans that contain material icon text
-  doc.querySelectorAll('span').forEach(s => {
+  doc.querySelectorAll('span, p').forEach(s => {
     const t = s.textContent.trim();
     if (t === 'keyboard_double_arrow_right' || t === 'keyboard_double_arrow_left') {
       s.textContent = t === 'keyboard_double_arrow_right' ? '▶' : '◀';
       s.style.fontFamily = 'Arial, sans-serif';
       s.style.fontSize = '16px';
       s.style.fontWeight = 'bold';
+      s.style.color = '#e8832a';
+    }
+    if (t === 'keyboard_arrow_right') {
+      s.textContent = '›';
+      s.style.fontFamily = 'Arial, sans-serif';
+      s.style.fontSize = '18px';
+      s.style.color = '#e8832a';
+    }
+    if (t === 'keyboard_arrow_down') {
+      s.textContent = '⌄';
+      s.style.fontFamily = 'Arial, sans-serif';
+      s.style.fontSize = '18px';
       s.style.color = '#e8832a';
     }
   });
@@ -498,6 +802,93 @@ _components.html(
 
 if page == "📊 Обзор":
     st.title("📊 Анализ Отзывов СДУ")
+    
+    # ── Upload and update data section ─────────────────────────────────────────
+    # ── Upload section — manual open/close via session_state ─────────────────
+    if "show_upload" not in st.session_state:
+        st.session_state["show_upload"] = False
+
+    if st.button("Обновить данные из HTML файла 2GIS" if not st.session_state["show_upload"] else "Скрыть загрузку", key="toggle_upload"):
+        st.session_state["show_upload"] = not st.session_state["show_upload"]
+        st.rerun()
+
+    if st.session_state["show_upload"]:
+        st.markdown("""
+        <div style="background:white;border-radius:12px;padding:20px 24px;
+                    margin-bottom:16px;box-shadow:0 2px 8px rgba(30,37,87,0.08);
+                    border-left:4px solid #e8832a;">
+        <b>Как это работает:</b><br>
+        1. Откройте страницу СДУ на 2GIS<br>
+        2. Прокрутите все отзывы<br>
+        3. Нажмите Ctrl+S и сохраните страницу как HTML файл<br>
+        4. Загрузите файл ниже<br><br>
+        Приложение распарсит отзывы, нормализует даты, удалит дубликаты и присвоит категории через Groq AI.
+        </div>
+        """, unsafe_allow_html=True)
+
+        uploaded_file = st.file_uploader("Выберите HTML файл", type=["html"], key="html_uploader")
+        if uploaded_file is not None:
+            try:
+                html_content = uploaded_file.read().decode("utf-8")
+                new_reviews_df = parse_html_2gis(html_content)
+
+                if len(new_reviews_df) > 0:
+                    st.success(f"✅ Распарсено {len(new_reviews_df)} отзывов из HTML")
+
+                    with st.expander("Примеры новых отзывов", expanded=False):
+                        preview_cols = ["text", "date", "rating", "reactions_total", "edited"]
+                        st.dataframe(new_reviews_df[preview_cols].head(5), use_container_width=True)
+
+                    def norm(s):
+                        return re.sub(r"\s+", " ", str(s).lower().strip())
+
+                    existing_texts = set(df["text"].apply(norm))
+                    duplicates_removed = new_reviews_df["text"].apply(norm).isin(existing_texts).sum()
+                    truly_new_count = int(len(new_reviews_df) - duplicates_removed)
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Старых отзывов", len(df))
+                    col2.metric("Новых отзывов", len(new_reviews_df))
+                    col3.metric("Дубликатов (уже есть)", int(duplicates_removed))
+                    col4.metric("Добавится новых", truly_new_count)
+
+                    if truly_new_count == 0:
+                        st.info("ℹ️ Все отзывы из файла уже есть в базе. Ничего не добавится.")
+                    else:
+                        st.markdown("---")
+                        st.markdown("**Категоризация новых отзывов через Groq AI**")
+                        st.caption(f"Нужно категоризировать {truly_new_count} новых отзывов батчами по 10.")
+
+                        if st.button("Категоризировать и сохранить", key="categorize_save", use_container_width=True):
+                            truly_new_df = new_reviews_df[~new_reviews_df["text"].apply(norm).isin(existing_texts)].copy().reset_index(drop=True)
+
+                            progress_bar = st.progress(0, text="Категоризирую отзывы...")
+                            total_batches = (len(truly_new_df) + 9) // 10
+                            all_categories = []
+                            for batch_i in range(total_batches):
+                                batch_texts = truly_new_df["text"].tolist()[batch_i*10:(batch_i+1)*10]
+                                batch_cats  = categorize_reviews_groq(batch_texts, batch_size=10)
+                                all_categories.extend(batch_cats)
+                                progress_bar.progress(
+                                    (batch_i + 1) / total_batches,
+                                    text=f"Батч {batch_i+1} из {total_batches}..."
+                                )
+                            progress_bar.empty()
+
+                            truly_new_df["categories"] = all_categories
+                            truly_new_df["categories_raw"] = all_categories
+
+                            merged_df = merge_and_deduplicate(df, truly_new_df)
+                            merged_df.to_csv(CSV_PATH, index=False, encoding="utf-8")
+                            st.cache_data.clear()
+                            st.session_state["show_upload"] = False
+                            st.success(f"✅ Добавлено {truly_new_count} новых отзывов с категориями!")
+                            st.rerun()
+                else:
+                    st.warning("⚠️ Не удалось распарсить отзывы из HTML. Проверьте формат файла.")
+            except Exception as e:
+                st.error(f"❌ Ошибка при обработке файла: {str(e)}")
+
     st.markdown(
         '<p style="color:#888;font-size:0.85em;margin-top:-10px;margin-bottom:18px;">'
         '🕐 Данные последний раз обновлены: <strong style="color:#e8832a;">5 марта 2026</strong>'
@@ -509,6 +900,7 @@ if page == "📊 Обзор":
     pct_pos   = (df.sentiment == "positive").mean() * 100
     pct_neg   = (df.sentiment == "negative").mean() * 100
     pct_reply = (df.has_official_reply == True).mean() * 100
+    pct_edited = (df["edited"] == True).mean() * 100 if "edited" in df.columns else 0
 
     df_sorted = df.dropna(subset=["year_month"]).sort_values("year_month")
     months_all = sorted(df_sorted["year_month"].unique())
@@ -526,26 +918,30 @@ if page == "📊 Обзор":
       <div style="font-size:1.1em;font-weight:800;color:#1e2557;margin-bottom:18px;">
         🎯 Ключевые показатели
       </div>
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:16px;text-align:center;">
-        <div>
-          <div style="font-size:2em;font-weight:900;color:#e8832a;">{avg_r:.2f}</div>
-          <div style="font-size:0.78em;color:#888;">Средний рейтинг</div>
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:16px;">
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:2em;font-weight:900;color:#e8832a;line-height:1.2;">{avg_r:.2f}</div>
+          <div style="font-size:0.78em;color:#888;margin-top:4px;text-align:center;">Средний рейтинг</div>
         </div>
-        <div>
-          <div style="font-size:2em;font-weight:900;color:#39dfb6;">{pct_pos:.0f}%</div>
-          <div style="font-size:0.78em;color:#888;">Позитивных</div>
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:2em;font-weight:900;color:#39dfb6;line-height:1.2;">{pct_pos:.0f}%</div>
+          <div style="font-size:0.78em;color:#888;margin-top:4px;text-align:center;">Позитивных</div>
         </div>
-        <div>
-          <div style="font-size:2em;font-weight:900;color:#fe7070;">{pct_neg:.0f}%</div>
-          <div style="font-size:0.78em;color:#888;">Негативных</div>
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:2em;font-weight:900;color:#fe7070;line-height:1.2;">{pct_neg:.0f}%</div>
+          <div style="font-size:0.78em;color:#888;margin-top:4px;text-align:center;">Негативных</div>
         </div>
-        <div>
-          <div style="font-size:2em;font-weight:900;color:#1e2557;">{len(df)}</div>
-          <div style="font-size:0.78em;color:#888;">Всего отзывов</div>
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:2em;font-weight:900;color:#1e2557;line-height:1.2;">{len(df)}</div>
+          <div style="font-size:0.78em;color:#888;margin-top:4px;text-align:center;">Всего отзывов</div>
         </div>
-        <div>
-          <div style="font-size:1.6em;font-weight:900;color:#1e2557;">{trend_arrow} {abs(pct_reply):.0f}%</div>
-          <div style="font-size:0.78em;color:#888;">Отвечено</div>
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:2em;font-weight:900;color:#1e2557;line-height:1.2;">{abs(pct_reply):.0f}% {trend_arrow}</div>
+          <div style="font-size:0.78em;color:#888;margin-top:4px;text-align:center;">Отвечено</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:2em;font-weight:900;color:#9b59b6;line-height:1.2;">{pct_edited:.0f}%</div>
+          <div style="font-size:0.78em;color:#888;margin-top:4px;text-align:center;">Отредактировано</div>
         </div>
       </div>
     </div>
@@ -614,6 +1010,142 @@ if page == "📊 Обзор":
     ax.spines[["top","right"]].set_visible(False)
     ax.legend(); plt.tight_layout()
     st.pyplot(fig)
+
+    st.divider()
+
+    # ── Самые негативные категории ────────────────────────────────────────────
+    st.subheader("🔴 Самые негативные категории")
+    st.caption("Категории с наибольшей долей негативных отзывов (% от всех отзывов в категории)")
+
+    skip_cats_ov = {"Нерелевантный / пустой отзыв", "Общий негативный отзыв"}
+    neg_pct_data = []
+    for cat, grp in df_exp.groupby("category"):
+        if cat in skip_cats_ov:
+            continue
+        total_cat = len(grp)
+        if total_cat < 5:
+            continue
+        neg_cnt = (grp["sentiment"] == "negative").sum()
+        neg_pct = neg_cnt / total_cat * 100
+        neg_pct_data.append({"category": cat, "neg_pct": neg_pct, "neg_cnt": int(neg_cnt), "total": total_cat})
+
+    neg_pct_df = pd.DataFrame(neg_pct_data).sort_values("neg_pct", ascending=False).head(12)
+
+    if len(neg_pct_df) > 0:
+        fig, ax = plt.subplots(figsize=(10, max(4, len(neg_pct_df) * 0.55)))
+        y_pos = range(len(neg_pct_df))
+        bars = ax.barh(
+            list(y_pos),
+            neg_pct_df["neg_pct"].values,
+            color="#fe7070",
+            edgecolor="#c0392b",
+            linewidth=0.7,
+            height=0.6,
+        )
+        # Add percentage labels inside/outside bars
+        for bar, pct, cnt, tot in zip(bars,
+                                       neg_pct_df["neg_pct"].values,
+                                       neg_pct_df["neg_cnt"].values,
+                                       neg_pct_df["total"].values):
+            label_x = bar.get_width() + 0.8
+            ax.text(label_x, bar.get_y() + bar.get_height() / 2,
+                    f"{pct:.1f}%  ({cnt}/{tot})",
+                    va="center", ha="left", fontsize=8.5, color="#1e2557", fontweight="600")
+
+        ax.set_yticks(list(y_pos))
+        ax.set_yticklabels(neg_pct_df["category"].tolist(), fontsize=9)
+        ax.set_xlabel("Доля негативных отзывов (%)")
+        ax.set_xlim(0, min(100, neg_pct_df["neg_pct"].max() + 20))
+        ax.axvline(x=50, color="#e8832a", linestyle="--", alpha=0.4, linewidth=1, label="50%")
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.invert_yaxis()
+        ax.legend(fontsize=8)
+        plt.tight_layout()
+        st.pyplot(fig)
+    else:
+        st.info("Недостаточно данных для построения графика.")
+
+    st.divider()
+
+    # ── Поиск отзывов по словам ───────────────────────────────────────────────
+    st.subheader("🔍 Поиск по отзывам")
+    st.caption("Введите слово или фразу для поиска по всем отзывам")
+
+    search_query = st.text_input(
+        "Поисковый запрос",
+        placeholder="Например: преподаватель, столовая, wifi, общежитие...",
+        key="ob_search_query",
+        label_visibility="collapsed",
+    )
+
+    if search_query.strip():
+        q = search_query.strip().lower()
+
+        def highlight(text, query):
+            import re as _re
+            escaped = _re.escape(query)
+            return _re.sub(
+                f"({escaped})",
+                r'<mark style="background:#fff3cd;color:#1e2557;border-radius:3px;padding:0 2px;">\1</mark>',
+                text,
+                flags=_re.IGNORECASE,
+            )
+
+        search_results = df[df["text"].str.lower().str.contains(q, na=False)].copy()
+
+        st.markdown(
+            f'<div style="font-weight:700;font-size:1em;color:#1e2557;margin-bottom:12px;">'
+            f'Найдено: <span style="color:#e8832a;">{len(search_results)}</span> отзывов</div>',
+            unsafe_allow_html=True,
+        )
+
+        if len(search_results) == 0:
+            st.info("По вашему запросу отзывов не найдено.")
+        else:
+            show_n = min(30, len(search_results))
+            for _, row in search_results.head(show_n).iterrows():
+                text_hl = highlight(row["text"], q)
+                sent_color = {
+                    "positive": "#39dfb6",
+                    "negative": "#fe7070",
+                    "neutral":  "#ffbe51",
+                }.get(row.get("sentiment", "neutral"), "#ccc")
+                try:
+                    date_val = row["date"]
+                    date_display = pd.to_datetime(date_val).strftime("%d.%m.%Y") if pd.notna(date_val) else None
+                except Exception:
+                    date_display = None
+                date_badge = (
+                    f'<span style="border:1.5px solid #e8832a;border-radius:6px;'
+                    f'padding:1px 8px;font-size:0.75em;color:#e8832a;font-weight:600;'
+                    f'background:#fff8f3;">📅 {date_display}</span>'
+                    if date_display else ""
+                )
+                cats_display = " · ".join([
+                    strip_cat_num(c.strip())
+                    for c in str(row.get("categories_raw", "")).split(";") if c.strip()
+                ])
+                st.markdown(
+                    f'<div style="background:white;border-left:4px solid {sent_color};'
+                    f'border-radius:10px;padding:12px 16px;margin-bottom:8px;'
+                    f'box-shadow:0 1px 6px rgba(30,37,87,0.08);">'
+                    f'<p style="margin:0;color:#1e2557;line-height:1.6;font-size:0.93em;word-break:break-word;">{text_hl}</p>'
+                    f'<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
+                    f'{date_badge}'
+                    f'<span style="font-size:0.78em;color:#888;">⭐ {int(row["rating"])} &nbsp;|&nbsp; '
+                    f'👍 {int(row["reactions_total"])} реакций</span>'
+                    + (f'<span style="font-size:0.78em;color:#e8832a;">{cats_display}</span>' if cats_display else '')
+                    + f'</div></div>',
+                    unsafe_allow_html=True,
+                )
+            if len(search_results) > show_n:
+                st.caption(f"Показано {show_n} из {len(search_results)} отзывов.")
+    else:
+        st.markdown(
+            '<div style="background:#f0f2fa;border-radius:10px;padding:14px 18px;'
+            'color:#888;font-size:0.92em;">Введите запрос выше, чтобы найти отзывы.</div>',
+            unsafe_allow_html=True,
+        )
 
     st.divider()
 
@@ -720,19 +1252,42 @@ elif page == "🎓 Категории":
     quotes   = [df.loc[orig_idxs[i], "text"] for i in best_pos]
 
     # ── metrics ───────────────────────────────────────────────────────────────
-    st.subheader("Статистика категории")
-    m1, m2, m3 = st.columns(3)
-    with m1: metric_card("Отзывов", len(orig_idxs))
-    with m2: metric_card("Доля", f"{percent:.1f}%")
-    with m3: metric_card("Средний рейтинг", f"{sub_exp['rating'].mean():.1f} ★")
+    avg_cat_rating = df.loc[orig_idxs, "rating"].mean() if orig_idxs else 0
 
-    st.markdown("**Ключевые слова:**")
-    if keywords:
-        st.markdown(" ".join([f'<span class="tag">{k}</span>' for k in keywords]),
-                    unsafe_allow_html=True)
-    else:
-        st.write("—")
-
+    st.markdown(f"""
+    <div style="
+        background:white;
+        border-radius:14px;
+        padding:24px 28px;
+        box-shadow:0 2px 12px rgba(30,37,87,0.10);
+        border-left:6px solid #e8832a;
+        margin-bottom:20px;
+    "><div style="
+            font-size:1.1em;
+            font-weight:800;
+            color:#1e2557;
+            margin-bottom:18px;
+        ">
+            📊 Статистика категории
+        </div><div style="
+            display:flex;
+            justify-content:space-between;
+            gap:16px;
+            text-align:center;
+        "><div style="flex:1;">
+                <div style="font-size:2em;font-weight:900;color:#1e2557;">{len(orig_idxs)}</div>
+                <div style="font-size:0.82em;color:#888;">Отзывов</div>
+            </div><div style="flex:1;">
+                <div style="font-size:2em;font-weight:900;color:#e8832a;">{percent:.1f}%</div>
+                <div style="font-size:0.82em;color:#888;">Доля</div>
+            </div><div style="flex:1;">
+                <div style="font-size:2em;font-weight:900;color:#39dfb6;">{avg_cat_rating:.1f} ★</div>
+                <div style="font-size:0.82em;color:#888;">Средний рейтинг</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.divider()
     # ── Сентимент (слева) + Рейтинги (справа) ───────────────────────────────
     color_map_ru = {"Позитивный":"#39dfb6","Негативный":"#fe7070","Нейтральный":"#ffda3b"}
     col_sent, col_hist = st.columns(2)
@@ -851,52 +1406,88 @@ elif page == "📅 Временная лента":
 
     df_dated = df.dropna(subset=["year_month"])
 
-    st.subheader("🗓️ Выберите период")
+    st.markdown('<div class="period-card">', unsafe_allow_html=True)
+    st.markdown('<div class="period-title">🗓️ Выберите период</div>', unsafe_allow_html=True)
+
     col_y, col_m = st.columns(2)
+
     with col_y:
-        years    = sorted(df_dated["year"].dropna().unique().astype(int), reverse=True)
+        years = sorted(df_dated["year"].dropna().unique().astype(int), reverse=True)
         sel_year = st.selectbox("📅 Год", years, key="tl_year")
+
     with col_m:
         months_for_year = sorted(
             df_dated[df_dated["year"] == sel_year]["month"].dropna().unique().astype(int)
         )
         sel_month = st.selectbox(
-            "🗓 Месяц", months_for_year, key="tl_month",
+            "🗓 Месяц",
+            months_for_year,
+            key="tl_month",
             format_func=lambda m: MONTH_NAMES.get(m, str(m))
         )
 
-    sub_month     = df[(df["year"] == sel_year) & (df["month"] == sel_month)]
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    sub_month = df[(df["year"] == sel_year) & (df["month"] == sel_month)]
     sub_month_exp = df_exp[(df_exp["year"] == sel_year) & (df_exp["month"] == sel_month)]
 
     if sub_month.empty:
         st.warning("Нет данных за выбранный период.")
     else:
-        period_label = f"{MONTH_NAMES.get(sel_month,'')} {sel_year}"
+        period_label = f"{MONTH_NAMES.get(sel_month, '')} {sel_year}"
 
-        # ── stats ─────────────────────────────────────────────────────────────
+            # ── stats ─────────────────────────────────────────────────────────────
         st.subheader(f"📊 {period_label}")
-        mc1, mc2, mc3, mc4 = st.columns(4)
-        with mc1: metric_card("Отзывов", len(sub_month))
-        with mc2: metric_card("Средний рейтинг", f"{sub_month['rating'].mean():.1f} ★")
-        with mc3: metric_card("Позитивных", str((sub_month["sentiment"]=="positive").sum()))
-        with mc4: metric_card("Негативных", str((sub_month["sentiment"]=="negative").sum()))
+        st.markdown(f"""
+        <div style="background:white;padding:24px;border-radius:12px;box-shadow:0 2px 10px rgba(30,37,87,0.12);border-left:4px solid #e8832a;">
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:24px;text-align:center;">
+            <div>
+              <div style="font-size:2em;font-weight:900;color:#1e2557;">{len(sub_month)}</div>
+              <div style="font-size:0.78em;color:#888;">Отзывов</div>
+            </div>
+            <div>
+              <div style="font-size:2em;font-weight:900;color:#e8832a;">{sub_month['rating'].mean():.1f} ★</div>
+              <div style="font-size:0.78em;color:#888;">Средний рейтинг</div>
+            </div>
+            <div>
+              <div style="font-size:2em;font-weight:900;color:#39dfb6;">{(sub_month["sentiment"]=="positive").sum()}</div>
+              <div style="font-size:0.78em;color:#888;">Позитивных</div>
+            </div>
+            <div>
+              <div style="font-size:2em;font-weight:900;color:#fe7070;">{(sub_month["sentiment"]=="negative").sum()}</div>
+              <div style="font-size:0.78em;color:#888;">Негативных</div>
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
         top_cats_month = sub_month_exp["category"].value_counts().head(6)
 
-        col_l, col_r = st.columns(2)
+        st.markdown("""
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
+          <div style="font-weight:700;font-size:0.95em;color:#1e2557;padding:6px 0 4px;">Сентимент месяца:</div>
+          <div style="font-weight:700;font-size:0.95em;color:#1e2557;padding:6px 0 4px;">Топ категорий месяца:</div>
+        </div>
+        """, unsafe_allow_html=True)
+        col_l, col_r = st.columns([0.5, 0.5])
         with col_l:
-            st.markdown("**Сентимент месяца:**")
             sent_m     = sub_month["sentiment"].value_counts().rename(index=SENT_LABELS)
             color_map_ru = {"Позитивный":"#39dfb6","Негативный":"#fe7070","Нейтральный":"#ffda3b"}
-            fig, ax    = plt.subplots(figsize=(4, 4))
+            fig, ax = plt.subplots(figsize=(4, 4))
             pie_colors = [color_map_ru.get(s, "#e8832a") for s in sent_m.index]
-            ax.pie(sent_m, labels=sent_m.index, colors=pie_colors, autopct="%1.0f%%", startangle=90)
+            ax.pie(sent_m, labels=sent_m.index, colors=pie_colors, autopct="%1.0f%%", startangle=90,
+                   textprops={"fontsize": 8})
+            plt.tight_layout()
             st.pyplot(fig)
         with col_r:
-            st.markdown("**Топ категорий месяца:**")
-            fig, ax = plt.subplots(figsize=(6, 3))
+            fig, ax = plt.subplots(figsize=(4, 4))
             top_cats_month.sort_values().plot(kind="barh", ax=ax, color="#e8832a")
-            ax.set_xlabel("Кол-во отзывов"); plt.tight_layout()
+            ax.set_xlabel("Кол-во отзывов", fontsize=8)
+            ax.set_ylabel("")
+            ax.tick_params(axis="y", labelsize=8)
+            ax.tick_params(axis="x", labelsize=8)
+            ax.spines[["top","right"]].set_visible(False)
+            plt.tight_layout()
             st.pyplot(fig)
 
         st.divider()
@@ -1122,52 +1713,104 @@ elif page == "🏆 Сравнение":
 
     # ── Проблемные зоны (топ негативных категорий с цитатами) ────────────────
     st.subheader("🚨 Проблемные зоны")
-    st.caption("Категории с наибольшим числом негативных отзывов и реальные цитаты студентов")
+    st.caption("Категории с наибольшим числом негативных отзывов. Нажмите на цитату для просмотра полного отзыва.")
+
+    # ── White/red style for quote buttons + wide dialog ─────────────────────
+    st.markdown("""
+    <style>
+    /* Widen the dialog modal */
+    div[data-testid="stDialog"] > div > div {
+        max-width: 780px !important;
+        width: 90vw !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── Modal dialog for full review ─────────────────────────────────────────
+    @st.dialog("💬 Полный отзыв")
+    def show_full_review(text, rating, reactions):
+        stars = "★" * int(rating) + "☆" * (5 - int(rating))
+        st.markdown(f"""
+        <div style="display:flex;gap:12px;margin-bottom:14px;align-items:center;">
+          <span style="font-size:1.1em;color:#c0392b;font-weight:700;">{stars}</span>
+          <span style="background:#fee2e2;color:#c0392b;border-radius:20px;
+                       padding:2px 10px;font-size:0.82em;font-weight:700;">★ {rating}</span>
+          <span style="background:#fff3f3;color:#e67e22;border-radius:20px;
+                       padding:2px 10px;font-size:0.82em;font-weight:700;">👍 {reactions} реакций</span>
+        </div>
+        <div style="border-left:4px solid #fe7070;padding:14px 18px;background:#fff5f5;
+                    border-radius:8px;font-size:0.97em;color:#1e2557;line-height:1.7;
+                    white-space:pre-wrap;">{text}</div>
+        """, unsafe_allow_html=True)
 
     neg_df = df_exp[df_exp["sentiment"] == "negative"]
     if len(neg_df) > 0:
         neg_by_cat = neg_df.groupby("category").size().sort_values(ascending=False)
-        # exclude irrelevant categories
         skip_cats = {"Нерелевантный / пустой отзыв", "Общий негативный отзыв"}
         neg_by_cat = neg_by_cat[~neg_by_cat.index.isin(skip_cats)].head(5)
 
+        used_review_ids = set()
+
         for rank, (cat, cnt) in enumerate(neg_by_cat.items(), 1):
             cat_negs = neg_df[neg_df["category"] == cat].copy()
-            # pick top 2 most-reacted reviews as quotes
-            quotes = (cat_negs.sort_values("reactions_total", ascending=False)
-                              .head(2)["text"]
-                              .tolist())
+            cat_negs_unique = cat_negs[~cat_negs["orig_idx"].isin(used_review_ids)]
+
+            if len(cat_negs_unique) == 0:
+                continue
+
+            # Show reviews where this category is the PRIMARY (first) one
+            primary_mask = df.loc[cat_negs_unique["orig_idx"], "categories_raw"].apply(
+                lambda x: strip_cat_num(str(x).split(";")[0].strip()) == cat
+            )
+            primary_idx = primary_mask[primary_mask].index.tolist()
+            primary_rows = cat_negs_unique[cat_negs_unique["orig_idx"].isin(primary_idx)]
+
+            # Fall back to all negatives if no primary-tagged reviews found
+            pool = primary_rows if len(primary_rows) > 0 else cat_negs_unique
+
+            top_rows = pool.sort_values("reactions_total", ascending=False).head(2)
+            used_review_ids.update(top_rows["orig_idx"].tolist())
+
             avg_cat_r = cat_negs["rating"].mean()
+            total_reactions = int(cat_negs["reactions_total"].sum())
 
-            quotes_html = "".join([
-                f'<div style="border-left:3px solid #fe7070;padding:6px 12px;margin:6px 0;' +
-                f'background:#fff5f5;border-radius:0 8px 8px 0;font-size:0.88em;color:#444;">' +
-                f'"{ q[:160] }{"..." if len(q)>160 else ""}"</div>'
-                for q in quotes if isinstance(q, str) and len(q.strip()) > 5
-            ])
-
+            # ── Category header ───────────────────────────────────────────────
             st.markdown(f"""
             <div style="background:white;border-radius:12px;padding:16px 20px;
-                        margin-bottom:12px;box-shadow:0 1px 8px rgba(30,37,87,0.08);
+                        margin-top:12px;margin-bottom:6px;
+                        box-shadow:0 1px 8px rgba(30,37,87,0.08);
                         border-left:4px solid #fe7070;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <div style="font-weight:700;font-size:1em;color:#1e2557;">
-                  {rank}. {cat}
-                </div>
-                <div style="display:flex;gap:12px;">
-                  <span style="background:#fee;color:#c0392b;border-radius:20px;
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="font-weight:700;font-size:1em;color:#1e2557;">{rank}. {cat}</div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                  <span style="background:#fee2e2;color:#c0392b;border-radius:20px;
                                padding:2px 10px;font-size:0.82em;font-weight:700;">
-                    {cnt} негативных
-                  </span>
+                    {cnt} негативных</span>
                   <span style="background:#f0f2fa;color:#1e2557;border-radius:20px;
                                padding:2px 10px;font-size:0.82em;font-weight:700;">
-                    ★ {avg_cat_r:.1f}
-                  </span>
+                    ★ {avg_cat_r:.1f}</span>
+                  <span style="background:#fff3f3;color:#e67e22;border-radius:20px;
+                               padding:2px 10px;font-size:0.82em;font-weight:700;">
+                    👍 {total_reactions} реакций</span>
                 </div>
               </div>
-              {quotes_html}
             </div>
             """, unsafe_allow_html=True)
+
+            # ── Quote buttons → open modal ────────────────────────────────────
+            for _, row in top_rows.iterrows():
+                q = row["text"]
+                if not isinstance(q, str) or len(q.strip()) <= 5:
+                    continue
+                preview = q[:160] + ("…" if len(q) > 160 else "")
+                btn_key = f"rev_{rank}_{row['orig_idx']}"
+                with st.container():
+                    st.markdown('<div class="quote-btn">', unsafe_allow_html=True)
+                    if st.button(f'💬 "{preview}"', key=btn_key, use_container_width=True):
+                        show_full_review(q, row["rating"], row["reactions_total"])
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+            st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
+
     else:
         st.info("Негативных отзывов не найдено.")
-
