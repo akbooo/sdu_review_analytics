@@ -32,7 +32,6 @@ def check_password():
 if not check_password():
     st.stop()
 
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ── download stopwords if needed ──────────────────────────────────────────────
 try:
@@ -888,12 +887,32 @@ if page == "📊 Обзор":
                     st.warning("⚠️ Не удалось распарсить отзывы из HTML. Проверьте формат файла.")
             except Exception as e:
                 st.error(f"❌ Ошибка при обработке файла: {str(e)}")
+    from datetime import datetime
+    from pathlib import Path
+    import streamlit as st
+
+    MONTH_NAMES = {
+        1: "января", 2: "февраля", 3: "марта", 4: "апреля",
+        5: "мая", 6: "июня", 7: "июля", 8: "августа",
+        9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
+    }
+
+    data_file = Path("sdu_categorized_final.csv")  # укажи свой файл
+
+    if data_file.exists():
+        updated_dt = datetime.fromtimestamp(data_file.stat().st_mtime)
+        updated_str = f"{updated_dt.day} {MONTH_NAMES[updated_dt.month]} {updated_dt.year}, {updated_dt:%H:%M}"
+    else:
+        updated_str = "неизвестно"
 
     st.markdown(
-        '<p style="color:#888;font-size:0.85em;margin-top:-10px;margin-bottom:18px;">'
-        '🕐 Данные последний раз обновлены: <strong style="color:#e8832a;">5 марта 2026</strong>'
-        '</p>',
-        unsafe_allow_html=True,
+        f'''
+        <p style="color:#888;font-size:0.85em;margin-top:-10px;margin-bottom:18px;">
+            🕐 Данные последний раз обновлены:
+            <strong style="color:#e8832a;">{updated_str}</strong>
+        </p>
+        ''',
+        unsafe_allow_html=True
     )
     # ── Executive Summary ─────────────────────────────────────────────────────
     avg_r     = df["rating"].mean()
