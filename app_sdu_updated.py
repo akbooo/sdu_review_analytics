@@ -886,6 +886,9 @@ if page == "📊 Обзор":
     
     # ── Upload and update data section ─────────────────────────────────────────
     # ── Upload section — manual open/close via session_state ─────────────────
+    if "show_upload" not in st.session_state:
+        st.session_state["show_upload"] = False
+
     if st.button(
         "Обновить данные из HTML файла 2GIS" if not st.session_state["show_upload"] else "Скрыть загрузку",
         key="toggle_upload"
