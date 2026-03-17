@@ -47,6 +47,7 @@ def github_headers():
         "Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "streamlit-sdu-review-app",
     }
 
 def get_github_file(path: str):
