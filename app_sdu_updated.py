@@ -32,6 +32,80 @@ def check_password():
 
 if not check_password():
     st.stop()
+import base64
+import io
+import json
+import requests
+import pandas as pd
+import streamlit as st
+
+def github_headers():
+    return {
+        "Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+def get_github_file(path: str):
+    owner = st.secrets["GITHUB_OWNER"]
+    repo = st.secrets["GITHUB_REPO"]
+    branch = st.secrets.get("GITHUB_BRANCH", "main")
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    r = requests.get(url, headers=github_headers(), params={"ref": branch}, timeout=30)
+
+    if r.status_code == 404:
+        return None, None
+
+    r.raise_for_status()
+    data = r.json()
+    content = base64.b64decode(data["content"]).decode("utf-8")
+    sha = data["sha"]
+    return content, sha
+
+def update_github_file(path: str, text_content: str, message: str, sha: str | None = None):
+    owner = st.secrets["GITHUB_OWNER"]
+    repo = st.secrets["GITHUB_REPO"]
+    branch = st.secrets.get("GITHUB_BRANCH", "main")
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+
+    payload = {
+        "message": message,
+        "content": base64.b64encode(text_content.encode("utf-8")).decode("utf-8"),
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(url, headers=github_headers(), json=payload, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+def save_dataframe_to_github(df_to_save: pd.DataFrame, repo_csv_path: str):
+    old_content, sha = get_github_file(repo_csv_path)
+
+    csv_text = df_to_save.to_csv(index=False, encoding="utf-8")
+
+    result = update_github_file(
+        path=repo_csv_path,
+        text_content=csv_text,
+        message=f"Update reviews dataset from Streamlit ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})",
+        sha=sha,
+    )
+    return result
+
+def update_data_last_updated_file():
+    path = "data_last_updated.txt"
+    old_content, sha = get_github_file(path)
+    text = datetime.now().strftime("%d %B %Y, %H:%M")
+
+    update_github_file(
+        path=path,
+        text_content=text,
+        message="Update data timestamp",
+        sha=sha,
+    )
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ── download stopwords if needed ──────────────────────────────────────────────
 try:
@@ -878,10 +952,14 @@ if page == "📊 Обзор":
                             truly_new_df["categories_raw"] = all_categories
 
                             merged_df = merge_and_deduplicate(df, truly_new_df)
-                            merged_df.to_csv(CSV_PATH, index=False, encoding="utf-8")
+
+                            with st.spinner("Сохраняю данные в GitHub..."):
+                                save_dataframe_to_github(merged_df, CSV_PATH)
+                                update_data_last_updated_file()
+
                             st.cache_data.clear()
                             st.session_state["show_upload"] = False
-                            st.success(f"✅ Добавлено {truly_new_count} новых отзывов с категориями!")
+                            st.success(f"✅ Добавлено {truly_new_count} новых отзывов с категориями и сохранено в GitHub!")
                             st.rerun()
                 else:
                     st.warning("⚠️ Не удалось распарсить отзывы из HTML. Проверьте формат файла.")
