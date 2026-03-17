@@ -50,22 +50,31 @@ def github_headers():
         "User-Agent": "streamlit-sdu-review-app",
     }
 
-def get_github_file(path: str):
+def update_github_file(path: str, text_content: str, message: str, sha=None):
     owner = st.secrets["GITHUB_OWNER"]
     repo = st.secrets["GITHUB_REPO"]
     branch = st.secrets.get("GITHUB_BRANCH", "main")
 
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-    r = requests.get(url, headers=github_headers(), params={"ref": branch}, timeout=30)
 
-    if r.status_code == 404:
-        return None, None
+    payload = {
+        "message": message,
+        "content": base64.b64encode(text_content.encode("utf-8")).decode("utf-8"),
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
 
-    r.raise_for_status()
-    data = r.json()
-    content = base64.b64decode(data["content"]).decode("utf-8")
-    sha = data["sha"]
-    return content, sha
+    r = requests.put(url, headers=github_headers(), json=payload, timeout=30)
+
+    if not r.ok:
+        try:
+            error_json = r.json()
+        except Exception:
+            error_json = r.text
+        raise Exception(f"GitHub PUT failed: {r.status_code} | {error_json}")
+
+    return r.json()
 
 def update_github_file(path: str, text_content: str, message: str, sha: str | None = None):
     owner = st.secrets["GITHUB_OWNER"]
