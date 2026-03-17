@@ -12,6 +12,9 @@ from nltk.corpus import stopwords
 import os
 from bs4 import BeautifulSoup
 import re
+from datetime import datetime
+from pathlib import Path
+
 def check_password():
     if st.session_state.get("authenticated", False):
         return True
@@ -106,6 +109,11 @@ def update_data_last_updated_file():
         message="Update data timestamp",
         sha=sha,
     )
+def get_repo_data_date():
+    content, _ = get_github_file("data_last_updated.txt")
+    if content:
+        return content.strip()
+    return "неизвестно"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ── download stopwords if needed ──────────────────────────────────────────────
 try:
@@ -878,10 +886,10 @@ if page == "📊 Обзор":
     
     # ── Upload and update data section ─────────────────────────────────────────
     # ── Upload section — manual open/close via session_state ─────────────────
-    if "show_upload" not in st.session_state:
-        st.session_state["show_upload"] = False
-
-    if st.button("Обновить данные из HTML файла 2GIS" if not st.session_state["show_upload"] else "Скрыть загрузку", key="toggle_upload"):
+    if st.button(
+        "Обновить данные из HTML файла 2GIS" if not st.session_state["show_upload"] else "Скрыть загрузку",
+        key="toggle_upload"
+    ):
         st.session_state["show_upload"] = not st.session_state["show_upload"]
         st.rerun()
 
@@ -900,6 +908,7 @@ if page == "📊 Обзор":
         """, unsafe_allow_html=True)
 
         uploaded_file = st.file_uploader("Выберите HTML файл", type=["html"], key="html_uploader")
+
         if uploaded_file is not None:
             try:
                 html_content = uploaded_file.read().decode("utf-8")
@@ -933,19 +942,24 @@ if page == "📊 Обзор":
                         st.caption(f"Нужно категоризировать {truly_new_count} новых отзывов батчами по 10.")
 
                         if st.button("Категоризировать и сохранить", key="categorize_save", use_container_width=True):
-                            truly_new_df = new_reviews_df[~new_reviews_df["text"].apply(norm).isin(existing_texts)].copy().reset_index(drop=True)
+                            truly_new_df = new_reviews_df[
+                                ~new_reviews_df["text"].apply(norm).isin(existing_texts)
+                            ].copy().reset_index(drop=True)
 
                             progress_bar = st.progress(0, text="Категоризирую отзывы...")
                             total_batches = (len(truly_new_df) + 9) // 10
                             all_categories = []
+
                             for batch_i in range(total_batches):
                                 batch_texts = truly_new_df["text"].tolist()[batch_i*10:(batch_i+1)*10]
-                                batch_cats  = categorize_reviews_groq(batch_texts, batch_size=10)
+                                batch_cats = categorize_reviews_groq(batch_texts, batch_size=10)
                                 all_categories.extend(batch_cats)
+
                                 progress_bar.progress(
                                     (batch_i + 1) / total_batches,
                                     text=f"Батч {batch_i+1} из {total_batches}..."
                                 )
+
                             progress_bar.empty()
 
                             truly_new_df["categories"] = all_categories
@@ -959,15 +973,15 @@ if page == "📊 Обзор":
 
                             st.cache_data.clear()
                             st.session_state["show_upload"] = False
-                            st.success(f"✅ Добавлено {truly_new_count} новых отзывов с категориями и сохранено в GitHub!")
+                            st.success(
+                                f"✅ Добавлено {truly_new_count} новых отзывов с категориями и сохранено в GitHub!"
+                            )
                             st.rerun()
                 else:
                     st.warning("⚠️ Не удалось распарсить отзывы из HTML. Проверьте формат файла.")
+
             except Exception as e:
-                st.error(f"❌ Ошибка при обработке файла: {str(e)}")
-    from datetime import datetime
-    from pathlib import Path
-    import streamlit as st
+                st.error(f"❌ Ошибка при обработке файла: {str(e)}")    
 
     MONTH_NAMES = {
         1: "января", 2: "февраля", 3: "марта", 4: "апреля",
@@ -975,19 +989,13 @@ if page == "📊 Обзор":
         9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
     }
 
-    data_file = Path("sdu_categorized_final.csv")  # укажи свой файл
-
-    if data_file.exists():
-        updated_dt = datetime.fromtimestamp(data_file.stat().st_mtime)
-        updated_str = f"{updated_dt.day} {MONTH_NAMES[updated_dt.month]} {updated_dt.year}, {updated_dt:%H:%M}"
-    else:
-        updated_str = "неизвестно"
+    repo_date = get_repo_data_date()
 
     st.markdown(
         f'''
         <p style="color:#888;font-size:0.85em;margin-top:-10px;margin-bottom:18px;">
             🕐 Данные последний раз обновлены:
-            <strong style="color:#e8832a;">{updated_str}</strong>
+            <strong style="color:#e8832a;">{repo_date}</strong>
         </p>
         ''',
         unsafe_allow_html=True
