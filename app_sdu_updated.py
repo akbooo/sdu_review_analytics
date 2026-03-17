@@ -11,6 +11,7 @@ import nltk
 from nltk.corpus import stopwords
 import os
 from bs4 import BeautifulSoup
+import re
 def check_password():
     if st.session_state.get("authenticated", False):
         return True
@@ -31,7 +32,6 @@ def check_password():
 
 if not check_password():
     st.stop()
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ── download stopwords if needed ──────────────────────────────────────────────
 try:
@@ -1110,8 +1110,11 @@ if page == "📊 Обзор":
                 flags=_re.IGNORECASE,
             )
 
-        search_results = df[df["text"].str.lower().str.contains(q, na=False)].copy()
+        pattern = rf"\b{re.escape(q)}\b"
 
+        search_results = df[
+            df["text"].str.contains(pattern, case=False, na=False, regex=True)
+        ].copy()
         st.markdown(
             f'<div style="font-weight:700;font-size:1em;color:#1e2557;margin-bottom:12px;">'
             f'Найдено: <span style="color:#e8832a;">{len(search_results)}</span> отзывов</div>',
